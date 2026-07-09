@@ -1,0 +1,49 @@
+services:
+  gateway:
+    build:
+      context: ../apps/gateway
+    ports:
+      - "8080:80"
+    depends_on:
+      - checkpoint-api
+      - media-node
+    networks:
+      - music-net
+
+  checkpoint-api:
+    build:
+      context: ../apps/checkpoint-api
+    environment:
+      PORT: 4000
+      REDIS_A_URL: redis://redis-a:6379
+      REDIS_B_URL: redis://redis-b:6379
+      ALLOWED_ORIGIN: http://localhost:3000
+    depends_on:
+      - redis-a
+      - redis-b
+    networks:
+      - music-net
+
+  media-node:
+    build:
+      context: ../apps/media-node
+    environment:
+      PORT: 8080
+      NODE_NAME: local-media-node
+      ALLOWED_ORIGIN: http://localhost:3000
+    networks:
+      - music-net
+
+  redis-a:
+    image: redis:8-alpine
+    networks:
+      - music-net
+
+  redis-b:
+    image: redis:8-alpine
+    networks:
+      - music-net
+
+networks:
+  music-net:
+    driver: bridge
