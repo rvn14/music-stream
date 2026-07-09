@@ -12,15 +12,16 @@ export type DemoSong = {
   hlsUrl: string;
 };
 
-const streamBaseUrl =
-  process.env.NEXT_PUBLIC_STREAM_BASE_URL ?? "http://localhost:8080";
+export const streamBaseUrl = (
+  process.env.NEXT_PUBLIC_STREAM_BASE_URL ?? "http://localhost:8080"
+).replace(/\/+$/, "");
 
 export const demoUsers: DemoUser[] = [
   {
     id: "user-001",
-    username: "vihanga",
+    username: "rvn14",
     password: "123456",
-    displayName: "Vihanga",
+    displayName: "RVN14",
   },
   {
     id: "user-002",
@@ -39,14 +40,14 @@ export const demoSongs: DemoSong[] = [
   },
   {
     id: "song-002",
-    title: "International Love",
-    artist: "Pitbull feat. Chris Brown",
+    title: "The Sound of Silence",
+    artist: "Disturbed",
     hlsUrl: `${streamBaseUrl}/media/song-002/index.m3u8`,
   },
   {
     id: "song-003",
-    title: "The Sound of Silence",
-    artist: "Disturbed",
+    title: "International Love",
+    artist: "Pitbull feat. Chris Brown",
     hlsUrl: `${streamBaseUrl}/media/song-003/index.m3u8`,
   },
 ];

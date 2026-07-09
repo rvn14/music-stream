@@ -2,20 +2,21 @@
 
 import Hls from "hls.js";
 import {
-  Maximize2,
   Music2,
   Pause,
-  Repeat,
-  Shuffle,
+  Play,
+  RotateCcw,
+  RotateCw,
   SkipBack,
   SkipForward,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
-import { DemoSong } from "@/lib/demo-data";
+import { ChangeEvent, useEffect, useRef, useState } from "react";
+import { DemoSong, streamBaseUrl } from "@/lib/demo-data";
 
 type MusicPlayerProps = {
   song: DemoSong;
   userId: string;
+  playRequest: number;
 };
 
 type PlaybackCheckpoint = {
@@ -26,9 +27,9 @@ type PlaybackCheckpoint = {
 };
 
 const coverBySongId: Record<string, string> = {
-  "song-001": "from-indigo-500 via-blue-500 to-sky-300",
-  "song-002": "from-orange-500 via-rose-500 to-yellow-300",
-  "song-003": "from-violet-600 via-fuchsia-500 to-cyan-400",
+  "song-001": "linear-gradient(135deg, #2563eb, #38bdf8)",
+  "song-002": "linear-gradient(135deg, #0891b2, #5eead4)",
+  "song-003": "linear-gradient(135deg, #7c3aed, #c084fc)",
 };
 
 function formatTime(seconds: number) {
@@ -44,12 +45,45 @@ function formatTime(seconds: number) {
   ).padStart(2, "0")}`;
 }
 
-export function MusicPlayer({ song, userId }: MusicPlayerProps) {
+function clampTime(value: number, duration: number) {
+  if (!Number.isFinite(duration) || duration <= 0) {
+    return Math.max(0, value);
+  }
+
+  return Math.min(Math.max(0, value), duration);
+}
+
+export function MusicPlayer({
+  song,
+  userId,
+  playRequest,
+}: MusicPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
+  const lastHandledPlayRequestRef = useRef(0);
+  const pendingResumeSecondsRef = useRef<number | null>(null);
   const [position, setPosition] = useState(0);
   const [bufferedUntil, setBufferedUntil] = useState(0);
-  const [lastCheckpoint, setLastCheckpoint] = useState("Never");
-  const [playerEvent, setPlayerEvent] = useState("Player ready");
+  const [duration, setDuration] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [, setLastCheckpoint] = useState("Never");
+  const [, setPlayerEvent] = useState("Player ready");
+
+  async function playAudio() {
+    const audio = audioRef.current;
+
+    if (!audio) {
+      return;
+    }
+
+    try {
+      await audio.play();
+      setIsPlaying(true);
+      setPlayerEvent("Audio playing");
+    } catch {
+      setIsPlaying(false);
+      setPlayerEvent("Playback blocked. Press play again.");
+    }
+  }
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -58,39 +92,99 @@ export function MusicPlayer({ song, userId }: MusicPlayerProps) {
       return;
     }
 
+    const audioElement = audio;
     let hls: Hls | null = null;
+    let isCancelled = false;
 
+    function markSourceReady() {
+      if (isCancelled) {
+        return;
+      }
+
+      setPlayerEvent("HLS playlist loaded");
+      applyPendingResume();
+    }
+
+    function applyPendingResume() {
+      const pendingSeconds = pendingResumeSecondsRef.current;
+
+      if (pendingSeconds === null) {
+        return;
+      }
+
+      try {
+        audioElement.currentTime = clampTime(
+          pendingSeconds,
+          audioElement.duration,
+        );
+        setPosition(audioElement.currentTime);
+        setPlayerEvent(
+          `Resumed locally at ${formatTime(audioElement.currentTime)}`,
+        );
+        pendingResumeSecondsRef.current = null;
+      } catch {
+        // Some browsers reject seeking before metadata is ready.
+      }
+    }
+
+    setPosition(0);
+    setBufferedUntil(0);
+    setDuration(0);
+    setIsPlaying(false);
     setPlayerEvent(`Loading ${song.title}`);
+
+    audioElement.pause();
+    audioElement.removeAttribute("src");
+    audioElement.load();
+
+    audioElement.addEventListener("loadedmetadata", markSourceReady);
+    audioElement.addEventListener("canplay", markSourceReady);
 
     if (Hls.isSupported()) {
       hls = new Hls({
         maxBufferLength: 12,
         backBufferLength: 30,
+        manifestLoadingMaxRetry: 4,
+        levelLoadingMaxRetry: 4,
+        fragLoadingMaxRetry: 4,
       });
 
-      hls.loadSource(song.hlsUrl);
-      hls.attachMedia(audio);
-
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        setPlayerEvent("HLS playlist loaded");
+      hls.attachMedia(audioElement);
+      hls.on(Hls.Events.MEDIA_ATTACHED, () => {
+        hls?.loadSource(song.hlsUrl);
       });
+
+      hls.on(Hls.Events.MANIFEST_PARSED, markSourceReady);
 
       hls.on(Hls.Events.ERROR, (_event, data) => {
         setPlayerEvent(`HLS event: ${data.details}`);
 
-        if (data.fatal && data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+        if (!data.fatal) {
+          return;
+        }
+
+        if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          hls?.startLoad();
+          return;
+        }
+
+        if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
           hls?.recoverMediaError();
         }
       });
     } else if (
       audio.canPlayType("application/vnd.apple.mpegurl")
     ) {
-      audio.src = song.hlsUrl;
+      audioElement.src = song.hlsUrl;
+      audioElement.load();
     } else {
       setPlayerEvent("HLS is not supported in this browser");
     }
 
     return () => {
+      isCancelled = true;
+      audioElement.removeEventListener("loadedmetadata", markSourceReady);
+      audioElement.removeEventListener("canplay", markSourceReady);
       hls?.destroy();
     };
   }, [song.hlsUrl, song.title]);
@@ -111,20 +205,25 @@ export function MusicPlayer({ song, userId }: MusicPlayerProps) {
       const checkpoint = JSON.parse(savedCheckpoint) as PlaybackCheckpoint;
 
       if (checkpoint.songId === song.id) {
-        audioElement.currentTime = checkpoint.positionMs / 1000;
-        setPlayerEvent(
-          `Resumed locally at ${formatTime(audioElement.currentTime)}`,
-        );
+        pendingResumeSecondsRef.current = checkpoint.positionMs / 1000;
       }
     }
 
     function updateUiState() {
       setPosition(audioElement.currentTime);
 
+      if (Number.isFinite(audioElement.duration)) {
+        setDuration(audioElement.duration);
+      }
+
       if (audioElement.buffered.length > 0) {
         const lastRange = audioElement.buffered.length - 1;
         setBufferedUntil(audioElement.buffered.end(lastRange));
       }
+    }
+
+    function updatePlaybackState() {
+      setIsPlaying(!audioElement.paused);
     }
 
     function saveLocalCheckpoint() {
@@ -149,16 +248,13 @@ export function MusicPlayer({ song, userId }: MusicPlayerProps) {
       localStorage.setItem(localKey, JSON.stringify(checkpoint));
 
       try {
-        await fetch(
-          `${process.env.NEXT_PUBLIC_STREAM_BASE_URL}/api/checkpoint`,
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(checkpoint),
+        await fetch(`${streamBaseUrl}/api/checkpoint`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
           },
-        );
+          body: JSON.stringify(checkpoint),
+        });
 
         setLastCheckpoint(new Date().toLocaleTimeString());
       } catch {
@@ -171,6 +267,12 @@ export function MusicPlayer({ song, userId }: MusicPlayerProps) {
     const remoteTimer = window.setInterval(saveRemoteCheckpoint, 2000);
 
     audioElement.addEventListener("timeupdate", updateUiState);
+    audioElement.addEventListener("loadedmetadata", updateUiState);
+    audioElement.addEventListener("durationchange", updateUiState);
+    audioElement.addEventListener("progress", updateUiState);
+    audioElement.addEventListener("play", updatePlaybackState);
+    audioElement.addEventListener("pause", updatePlaybackState);
+    audioElement.addEventListener("ended", updatePlaybackState);
     audioElement.addEventListener("pause", saveRemoteCheckpoint);
     audioElement.addEventListener("seeked", saveRemoteCheckpoint);
 
@@ -180,123 +282,188 @@ export function MusicPlayer({ song, userId }: MusicPlayerProps) {
       window.clearInterval(remoteTimer);
 
       audioElement.removeEventListener("timeupdate", updateUiState);
+      audioElement.removeEventListener("loadedmetadata", updateUiState);
+      audioElement.removeEventListener("durationchange", updateUiState);
+      audioElement.removeEventListener("progress", updateUiState);
+      audioElement.removeEventListener("play", updatePlaybackState);
+      audioElement.removeEventListener("pause", updatePlaybackState);
+      audioElement.removeEventListener("ended", updatePlaybackState);
       audioElement.removeEventListener("pause", saveRemoteCheckpoint);
       audioElement.removeEventListener("seeked", saveRemoteCheckpoint);
     };
   }, [song.id, userId]);
 
+  useEffect(() => {
+    const audio = audioRef.current;
+
+    if (!audio || playRequest === lastHandledPlayRequestRef.current) {
+      return;
+    }
+
+    const audioElement = audio;
+    lastHandledPlayRequestRef.current = playRequest;
+
+    let isCancelled = false;
+
+    async function waitForSourceAndPlay() {
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        if (isCancelled) {
+          return;
+        }
+
+        if (
+          audioElement.readyState >= HTMLMediaElement.HAVE_METADATA
+        ) {
+          break;
+        }
+
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+      }
+
+      if (isCancelled) {
+        return;
+      }
+
+      await playAudio();
+    }
+
+    void waitForSourceAndPlay();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [playRequest]);
+
+  function togglePlayback() {
+    const audio = audioRef.current;
+
+    if (!audio) {
+      return;
+    }
+
+    if (audio.paused) {
+      void playAudio();
+      return;
+    }
+
+    audio.pause();
+  }
+
+  function skipBy(seconds: number) {
+    const audio = audioRef.current;
+
+    if (!audio) {
+      return;
+    }
+
+    audio.currentTime = clampTime(
+      audio.currentTime + seconds,
+      audio.duration,
+    );
+    setPosition(audio.currentTime);
+  }
+
+  function seekTo(event: ChangeEvent<HTMLInputElement>) {
+    const audio = audioRef.current;
+
+    if (!audio) {
+      return;
+    }
+
+    const nextPosition = Number(event.target.value);
+    audio.currentTime = clampTime(nextPosition, audio.duration);
+    setPosition(audio.currentTime);
+  }
+
+  const progressMax = Math.max(duration, bufferedUntil, position, 1);
+
   return (
-    <div>
-      <div className="flex items-center justify-between">
-        <h2 className="text-sm font-bold">Player</h2>
-        <Maximize2 className="h-4 w-4 text-white/45" />
-      </div>
+    <div className="grid h-full min-h-0 grid-cols-[minmax(0,0.9fr)_minmax(320px,1fr)] gap-4 overflow-hidden">
+      <audio
+        ref={audioRef}
+        className="hidden"
+        crossOrigin="anonymous"
+        preload="auto"
+      />
 
       <div
-        className={`mx-auto mt-8 flex aspect-[1.25/1] w-full max-w-[230px] items-center justify-center rounded-lg bg-gradient-to-br ${
-          coverBySongId[song.id] ?? "from-indigo-500 to-sky-300"
-        } shadow-[0_22px_50px_rgba(0,0,0,0.35)]`}
+        className="flex min-h-0 items-center justify-center rounded-3xl text-white"
+        style={{
+          background:
+            coverBySongId[song.id] ??
+            "linear-gradient(135deg, #2563eb, #38bdf8)",
+        }}
       >
-        <Music2 className="h-16 w-16 text-white/85" />
+        <Music2 className="h-24 w-24" />
       </div>
 
-      <div className="mt-6 text-center">
-        <h3 className="text-2xl font-black tracking-tight">{song.title}</h3>
-        <p className="mt-2 text-sm font-semibold text-white/45">
+      <div className="flex min-h-0 flex-col justify-center overflow-hidden rounded-3xl border border-slate-200 bg-slate-50 p-6">
+        <p className="text-sm font-medium text-blue-600">Now playing</p>
+        <h2 className="mt-2 truncate text-4xl font-semibold tracking-tight">
+          {song.title}
+        </h2>
+        <p className="mt-2 truncate text-lg font-medium text-slate-500">
           {song.artist}
         </p>
-      </div>
 
-      <div className="mt-6">
-        <div className="flex items-center justify-between text-xs font-semibold text-white/45">
-          <span>{formatTime(position)}</span>
-          <span>{formatTime(bufferedUntil)}</span>
-        </div>
-        <div className="mt-2 h-1 rounded-full bg-white/10">
-          <div
-            className="h-full rounded-full bg-white"
-            style={{
-              width: `${
-                bufferedUntil > 0
-                  ? Math.min((position / bufferedUntil) * 100, 100)
-                  : 0
-              }%`,
-            }}
+        <div className="mt-10">
+          <input
+            aria-label="Playback progress"
+            className="w-full accent-blue-600"
+            max={progressMax}
+            min={0}
+            onChange={seekTo}
+            step={0.1}
+            type="range"
+            value={Math.min(position, progressMax)}
           />
-        </div>
-      </div>
-
-      <div className="mt-7 flex items-center justify-between text-white/45">
-        <Shuffle className="h-4 w-4" />
-        <SkipBack className="h-5 w-5" />
-        <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white text-[#15151d]">
-          <Pause className="h-6 w-6 fill-current" />
-        </span>
-        <SkipForward className="h-5 w-5" />
-        <Repeat className="h-4 w-4" />
-      </div>
-
-      <div className="mt-7 rounded-2xl bg-white/[0.06] p-3">
-        <audio
-          ref={audioRef}
-          controls
-          preload="auto"
-          className="w-full"
-        />
-      </div>
-
-      <div className="mt-5 grid grid-cols-2 gap-3">
-        <div className="rounded-2xl bg-white/[0.05] p-3">
-          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/30">
-            Timestamp
-          </p>
-          <p className="mt-2 text-lg font-black">{formatTime(position)}</p>
+          <div className="mt-2 flex items-center justify-between text-sm font-medium text-slate-500">
+            <span>{formatTime(position)}</span>
+            <span>{formatTime(progressMax)}</span>
+          </div>
         </div>
 
-        <div className="rounded-2xl bg-white/[0.05] p-3">
-          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/30">
-            Buffered
-          </p>
-          <p className="mt-2 text-lg font-black">
-            {formatTime(bufferedUntil)}
-          </p>
+        <div className="mt-10 flex items-center justify-center gap-4">
+          <button
+            onClick={() => skipBy(-10)}
+            className="flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition hover:text-slate-950"
+            aria-label="Back 10 seconds"
+          >
+            <RotateCcw className="h-5 w-5" />
+          </button>
+          <button
+            onClick={() => skipBy(-5)}
+            className="flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition hover:text-slate-950"
+            aria-label="Back 5 seconds"
+          >
+            <SkipBack className="h-5 w-5" />
+          </button>
+          <button
+            onClick={togglePlayback}
+            className="flex h-16 w-16 items-center justify-center rounded-3xl bg-blue-600 text-white transition hover:bg-blue-700"
+            aria-label={isPlaying ? "Pause" : "Play"}
+          >
+            {isPlaying ? (
+              <Pause className="h-7 w-7 fill-current" />
+            ) : (
+              <Play className="ml-1 h-7 w-7 fill-current" />
+            )}
+          </button>
+          <button
+            onClick={() => skipBy(5)}
+            className="flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition hover:text-slate-950"
+            aria-label="Forward 5 seconds"
+          >
+            <SkipForward className="h-5 w-5" />
+          </button>
+          <button
+            onClick={() => skipBy(10)}
+            className="flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition hover:text-slate-950"
+            aria-label="Forward 10 seconds"
+          >
+            <RotateCw className="h-5 w-5" />
+          </button>
         </div>
-
-        <div className="rounded-2xl bg-white/[0.05] p-3">
-          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/30">
-            Redis
-          </p>
-          <p className="mt-2 truncate text-sm font-bold">
-            {lastCheckpoint}
-          </p>
-        </div>
-
-        <div className="rounded-2xl bg-white/[0.05] p-3">
-          <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/30">
-            Recovery
-          </p>
-          <p className="mt-2 text-sm font-bold text-[#7d8aff]">
-            Buffer active
-          </p>
-        </div>
-      </div>
-
-      <div className="mt-3 rounded-2xl bg-white/[0.05] p-3">
-        <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/30">
-          Player event
-        </p>
-        <p className="mt-2 text-xs leading-5 text-white/50">
-          {playerEvent}
-        </p>
-      </div>
-
-      <div className="mt-3 rounded-2xl bg-white/[0.05] p-3">
-        <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-white/30">
-          Stream URL
-        </p>
-        <p className="mt-2 break-all font-mono text-[11px] leading-5 text-white/45">
-          {song.hlsUrl}
-        </p>
       </div>
     </div>
   );
