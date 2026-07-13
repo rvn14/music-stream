@@ -1,7 +1,7 @@
 "use client";
 
 import { LogOut, Music2, Play, Search } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { MusicPlayer } from "@/components/music-player";
 import {
   fetchRemoteCheckpoint,
@@ -113,6 +113,34 @@ export default function DashboardPage() {
     setPlayRequest((currentValue) => currentValue + 1);
   }
 
+  const selectAdjacentSong = useCallback(
+    (offset: number) => {
+      if (songs.length === 0) {
+        return;
+      }
+
+      const currentIndex = songs.findIndex(
+        (song) => song.id === selectedSong?.id,
+      );
+      const nextIndex =
+        (Math.max(currentIndex, 0) + offset + songs.length) % songs.length;
+
+      setSelectedSong(songs[nextIndex]);
+      setRestoreCheckpoint(null);
+      setPlayRequest((currentValue) => currentValue + 1);
+    },
+    [selectedSong?.id, songs],
+  );
+
+  const playNextSong = useCallback(
+    () => selectAdjacentSong(1),
+    [selectAdjacentSong],
+  );
+  const playPreviousSong = useCallback(
+    () => selectAdjacentSong(-1),
+    [selectAdjacentSong],
+  );
+
   if (!user) {
     return (
       <main className="flex h-screen items-center justify-center overflow-hidden bg-[#eef2f7] p-4 text-slate-950">
@@ -220,6 +248,8 @@ export default function DashboardPage() {
           <section className="min-h-0 overflow-hidden rounded-3xl border border-slate-200 bg-white p-4">
             {selectedSong ? (
               <MusicPlayer
+                onNext={playNextSong}
+                onPrevious={playPreviousSong}
                 playRequest={playRequest}
                 restoreCheckpoint={restoreCheckpoint}
                 song={selectedSong}

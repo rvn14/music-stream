@@ -30,6 +30,8 @@ type MusicPlayerProps = {
   userId: string;
   playRequest: number;
   restoreCheckpoint: PlaybackCheckpoint | null;
+  onNext: () => void;
+  onPrevious: () => void;
 };
 
 const coverBySongId: Record<string, string> = {
@@ -64,6 +66,8 @@ export function MusicPlayer({
   userId,
   playRequest,
   restoreCheckpoint,
+  onNext,
+  onPrevious,
 }: MusicPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const lastHandledPlayRequestRef = useRef(0);
@@ -73,6 +77,7 @@ export function MusicPlayer({
   const [bufferedUntil, setBufferedUntil] = useState(0);
   const [duration, setDuration] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isRepeating, setIsRepeating] = useState(false);
   const [, setLastCheckpoint] = useState("Never");
   const [, setPlayerEvent] = useState("Player ready");
 
@@ -267,13 +272,34 @@ export function MusicPlayer({
       }
 
       if (audioElement.buffered.length > 0) {
-        const lastRange = audioElement.buffered.length - 1;
-        setBufferedUntil(audioElement.buffered.end(lastRange));
+        let activeRange = audioElement.buffered.length - 1;
+
+        for (let index = 0; index < audioElement.buffered.length; index += 1) {
+          if (
+            audioElement.currentTime >= audioElement.buffered.start(index) &&
+            audioElement.currentTime <= audioElement.buffered.end(index)
+          ) {
+            activeRange = index;
+            break;
+          }
+        }
+
+        setBufferedUntil(audioElement.buffered.end(activeRange));
+      } else {
+        setBufferedUntil(0);
       }
     }
 
     function updatePlaybackState() {
       setIsPlaying(!audioElement.paused);
+    }
+
+    function handleEnded() {
+      updatePlaybackState();
+
+      if (!audioElement.loop) {
+        onNext();
+      }
     }
 
     function saveLocalCheckpoint() {
@@ -320,7 +346,7 @@ export function MusicPlayer({
     audioElement.addEventListener("progress", updateUiState);
     audioElement.addEventListener("play", updatePlaybackState);
     audioElement.addEventListener("pause", updatePlaybackState);
-    audioElement.addEventListener("ended", updatePlaybackState);
+    audioElement.addEventListener("ended", handleEnded);
     audioElement.addEventListener("pause", saveRemoteCheckpoint);
     audioElement.addEventListener("seeked", saveRemoteCheckpoint);
 
@@ -335,11 +361,19 @@ export function MusicPlayer({
       audioElement.removeEventListener("progress", updateUiState);
       audioElement.removeEventListener("play", updatePlaybackState);
       audioElement.removeEventListener("pause", updatePlaybackState);
-      audioElement.removeEventListener("ended", updatePlaybackState);
+      audioElement.removeEventListener("ended", handleEnded);
       audioElement.removeEventListener("pause", saveRemoteCheckpoint);
       audioElement.removeEventListener("seeked", saveRemoteCheckpoint);
     };
-  }, [applyPendingResume, restoreCheckpoint, song.id, userId]);
+  }, [applyPendingResume, onNext, restoreCheckpoint, song.id, userId]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+
+    if (audio) {
+      audio.loop = isRepeating;
+    }
+  }, [isRepeating]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -397,18 +431,16 @@ export function MusicPlayer({
     audio.pause();
   }
 
-  function skipBy(seconds: number) {
+  function restartTrack() {
     const audio = audioRef.current;
 
     if (!audio) {
       return;
     }
 
-    audio.currentTime = clampTime(
-      audio.currentTime + seconds,
-      audio.duration,
-    );
-    setPosition(audio.currentTime);
+    audio.currentTime = 0;
+    setPosition(0);
+    void playAudio();
   }
 
   function seekTo(event: ChangeEvent<HTMLInputElement>) {
@@ -424,6 +456,11 @@ export function MusicPlayer({
   }
 
   const progressMax = Math.max(duration, bufferedUntil, position, 1);
+  const playedPercent = Math.min((position / progressMax) * 100, 100);
+  const bufferedPercent = Math.min(
+    (Math.max(bufferedUntil, position) / progressMax) * 100,
+    100,
+  );
 
   return (
     <div className="grid h-full min-h-0 grid-cols-[minmax(0,0.9fr)_minmax(320px,1fr)] gap-4 overflow-hidden">
@@ -455,34 +492,70 @@ export function MusicPlayer({
         </p>
 
         <div className="mt-10">
-          <input
-            aria-label="Playback progress"
-            className="w-full accent-blue-600"
-            max={progressMax}
-            min={0}
-            onChange={seekTo}
-            step={0.1}
-            type="range"
-            value={Math.min(position, progressMax)}
-          />
-          <div className="mt-2 flex items-center justify-between text-sm font-medium text-slate-500">
-            <span>{formatTime(position)}</span>
-            <span>{formatTime(progressMax)}</span>
+          <div className="group relative flex h-5 items-center">
+            <div className="absolute inset-x-0 h-1.5 overflow-hidden rounded-full bg-slate-200">
+              <div
+                className="absolute inset-y-0 left-0 bg-slate-400 transition-[width] duration-150"
+                style={{ width: `${bufferedPercent}%` }}
+              />
+              <div
+                className="absolute inset-y-0 left-0 bg-blue-600"
+                style={{ width: `${playedPercent}%` }}
+              />
+            </div>
+            <div
+              aria-hidden="true"
+              className="pointer-events-none absolute h-3.5 w-3.5 -translate-x-1/2 rounded-full bg-blue-600 opacity-0 shadow-sm transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+              style={{ left: `${playedPercent}%` }}
+            />
+            <input
+              aria-label="Playback progress"
+              aria-valuetext={`${formatTime(position)} played, buffered until ${formatTime(bufferedUntil)}`}
+              className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+              max={progressMax}
+              min={0}
+              onChange={seekTo}
+              step={0.1}
+              type="range"
+              value={Math.min(position, progressMax)}
+            />
+          </div>
+          <div className="mt-2 grid grid-cols-3 text-xs font-medium text-slate-500 sm:text-sm">
+            <span>
+              <span className="block text-[10px] uppercase tracking-wider text-slate-400 sm:text-xs">
+                Current
+              </span>
+              {formatTime(position)}
+            </span>
+            <span className="text-center">
+              <span className="block text-[10px] uppercase tracking-wider text-slate-400 sm:text-xs">
+                Buffered
+              </span>
+              {formatTime(bufferedUntil)}
+            </span>
+            <span className="text-right">
+              <span className="block text-[10px] uppercase tracking-wider text-slate-400 sm:text-xs">
+                Duration
+              </span>
+              {formatTime(progressMax)}
+            </span>
           </div>
         </div>
 
         <div className="mt-10 flex items-center justify-center gap-4">
           <button
-            onClick={() => skipBy(-10)}
+            onClick={restartTrack}
             className="flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition hover:text-slate-950"
-            aria-label="Back 10 seconds"
+            aria-label="Restart track"
+            title="Restart track"
           >
             <RotateCcw className="h-5 w-5" />
           </button>
           <button
-            onClick={() => skipBy(-5)}
+            onClick={onPrevious}
             className="flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition hover:text-slate-950"
-            aria-label="Back 5 seconds"
+            aria-label="Previous track"
+            title="Previous track"
           >
             <SkipBack className="h-5 w-5" />
           </button>
@@ -498,16 +571,23 @@ export function MusicPlayer({
             )}
           </button>
           <button
-            onClick={() => skipBy(5)}
+            onClick={onNext}
             className="flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition hover:text-slate-950"
-            aria-label="Forward 5 seconds"
+            aria-label="Next track"
+            title="Next track"
           >
             <SkipForward className="h-5 w-5" />
           </button>
           <button
-            onClick={() => skipBy(10)}
-            className="flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-200 bg-white text-slate-500 transition hover:text-slate-950"
-            aria-label="Forward 10 seconds"
+            onClick={() => setIsRepeating((currentValue) => !currentValue)}
+            className={`flex h-12 w-12 items-center justify-center rounded-2xl border transition ${
+              isRepeating
+                ? "border-blue-600 bg-blue-50 text-blue-600"
+                : "border-slate-200 bg-white text-slate-500 hover:text-slate-950"
+            }`}
+            aria-label={isRepeating ? "Disable repeat" : "Repeat track"}
+            aria-pressed={isRepeating}
+            title={isRepeating ? "Repeat on" : "Repeat track"}
           >
             <RotateCw className="h-5 w-5" />
           </button>
