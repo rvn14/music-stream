@@ -1,0 +1,131 @@
+version: "3.9"
+
+services:
+  gateway:
+    image: rvn14/cloudmusic-gateway:latest
+
+    ports:
+      - target: 80
+        published: 80
+        protocol: tcp
+        mode: ingress
+
+    networks:
+      - music-net
+
+    deploy:
+      replicas: 3
+      placement:
+        constraints:
+          - node.labels.role == manager-app
+      restart_policy:
+        condition: any
+        delay: 1s
+      update_config:
+        parallelism: 1
+        delay: 5s
+        order: start-first
+
+  checkpoint-api:
+    image: rvn14/cloudmusic-checkpoint-api:latest
+
+    environment:
+      PORT: "4000"
+      REDIS_A_URL: redis://redis-a:6379
+      REDIS_B_URL: redis://redis-b:6379
+      ALLOWED_ORIGIN: "*"
+
+    networks:
+      - music-net
+
+    deploy:
+      replicas: 3
+      placement:
+        constraints:
+          - node.labels.role == manager-app
+      restart_policy:
+        condition: any
+        delay: 1s
+      update_config:
+        parallelism: 1
+        delay: 5s
+        order: start-first
+
+  media-node:
+    image: rvn14/cloudmusic-media-node:latest
+
+    environment:
+      PORT: "8080"
+      ALLOWED_ORIGIN: "*"
+
+    networks:
+      - music-net
+
+    deploy:
+      replicas: 3
+      placement:
+        constraints:
+          - node.labels.role == media-worker
+        max_replicas_per_node: 1
+      restart_policy:
+        condition: any
+        delay: 1s
+      update_config:
+        parallelism: 1
+        delay: 5s
+        order: start-first
+
+  redis-a:
+    image: redis:8-alpine
+
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+
+    volumes:
+      - redis-a-data:/data
+
+    networks:
+      - music-net
+
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.redis == a
+      restart_policy:
+        condition: any
+        delay: 1s
+
+  redis-b:
+    image: redis:8-alpine
+
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+
+    volumes:
+      - redis-b-data:/data
+
+    networks:
+      - music-net
+
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.redis == b
+      restart_policy:
+        condition: any
+        delay: 1s
+
+networks:
+  music-net:
+    driver: overlay
+    attachable: true
+
+volumes:
+  redis-a-data:
+  redis-b-data:

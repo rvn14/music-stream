@@ -10,20 +10,26 @@ import {
   SkipBack,
   SkipForward,
 } from "lucide-react";
-import { ChangeEvent, useEffect, useRef, useState } from "react";
-import { DemoSong, streamBaseUrl } from "@/lib/demo-data";
+import {
+  ChangeEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
+import {
+  getLatestCheckpoint,
+  readLocalCheckpoint,
+  writeLocalCheckpoint,
+} from "@/lib/checkpoints";
+import type { PlaybackCheckpoint } from "@/lib/checkpoints";
+import { streamBaseUrl, type DemoSong } from "@/lib/demo-data";
 
 type MusicPlayerProps = {
   song: DemoSong;
   userId: string;
   playRequest: number;
-};
-
-type PlaybackCheckpoint = {
-  userId: string;
-  songId: string;
-  positionMs: number;
-  updatedAt: number;
+  restoreCheckpoint: PlaybackCheckpoint | null;
 };
 
 const coverBySongId: Record<string, string> = {
@@ -57,10 +63,12 @@ export function MusicPlayer({
   song,
   userId,
   playRequest,
+  restoreCheckpoint,
 }: MusicPlayerProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const lastHandledPlayRequestRef = useRef(0);
   const pendingResumeSecondsRef = useRef<number | null>(null);
+  const checkpointSaveReadyRef = useRef(false);
   const [position, setPosition] = useState(0);
   const [bufferedUntil, setBufferedUntil] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -85,6 +93,39 @@ export function MusicPlayer({
     }
   }
 
+  const applyPendingResume = useCallback(
+    (audioElement: HTMLAudioElement) => {
+      const pendingSeconds = pendingResumeSecondsRef.current;
+
+      if (pendingSeconds === null) {
+        checkpointSaveReadyRef.current = true;
+        return;
+      }
+
+      if (
+        audioElement.readyState < HTMLMediaElement.HAVE_METADATA
+      ) {
+        return;
+      }
+
+      try {
+        audioElement.currentTime = clampTime(
+          pendingSeconds,
+          audioElement.duration,
+        );
+        setPosition(audioElement.currentTime);
+        setPlayerEvent(
+          `Resumed checkpoint at ${formatTime(audioElement.currentTime)}`,
+        );
+        pendingResumeSecondsRef.current = null;
+        checkpointSaveReadyRef.current = true;
+      } catch {
+        // Some browsers reject seeking before metadata is ready.
+      }
+    },
+    [],
+  );
+
   useEffect(() => {
     const audio = audioRef.current;
 
@@ -102,31 +143,11 @@ export function MusicPlayer({
       }
 
       setPlayerEvent("HLS playlist loaded");
-      applyPendingResume();
+      applyPendingResume(audioElement);
     }
 
-    function applyPendingResume() {
-      const pendingSeconds = pendingResumeSecondsRef.current;
-
-      if (pendingSeconds === null) {
-        return;
-      }
-
-      try {
-        audioElement.currentTime = clampTime(
-          pendingSeconds,
-          audioElement.duration,
-        );
-        setPosition(audioElement.currentTime);
-        setPlayerEvent(
-          `Resumed locally at ${formatTime(audioElement.currentTime)}`,
-        );
-        pendingResumeSecondsRef.current = null;
-      } catch {
-        // Some browsers reject seeking before metadata is ready.
-      }
-    }
-
+    pendingResumeSecondsRef.current = null;
+    checkpointSaveReadyRef.current = false;
     setPosition(0);
     setBufferedUntil(0);
     setDuration(0);
@@ -187,7 +208,7 @@ export function MusicPlayer({
       audioElement.removeEventListener("canplay", markSourceReady);
       hls?.destroy();
     };
-  }, [song.hlsUrl, song.title]);
+  }, [applyPendingResume, song.hlsUrl, song.title]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -197,16 +218,45 @@ export function MusicPlayer({
     }
 
     const audioElement = audio;
-    const localKey = `playback:${userId}`;
+    const latestCheckpoint = getLatestCheckpoint(
+      restoreCheckpoint,
+      readLocalCheckpoint(userId),
+    );
 
-    const savedCheckpoint = localStorage.getItem(localKey);
+    if (latestCheckpoint?.songId === song.id) {
+      pendingResumeSecondsRef.current =
+        latestCheckpoint.positionMs / 1000;
+      checkpointSaveReadyRef.current = false;
 
-    if (savedCheckpoint) {
-      const checkpoint = JSON.parse(savedCheckpoint) as PlaybackCheckpoint;
-
-      if (checkpoint.songId === song.id) {
-        pendingResumeSecondsRef.current = checkpoint.positionMs / 1000;
+      if (
+        audioElement.readyState >= HTMLMediaElement.HAVE_METADATA
+      ) {
+        applyPendingResume(audioElement);
       }
+    } else {
+      pendingResumeSecondsRef.current = null;
+
+      if (
+        audioElement.readyState >= HTMLMediaElement.HAVE_METADATA
+      ) {
+        checkpointSaveReadyRef.current = true;
+      }
+    }
+
+    function createCheckpoint(): PlaybackCheckpoint | null {
+      if (
+        !checkpointSaveReadyRef.current ||
+        audioElement.readyState < HTMLMediaElement.HAVE_METADATA
+      ) {
+        return null;
+      }
+
+      return {
+        userId,
+        songId: song.id,
+        positionMs: Math.floor(audioElement.currentTime * 1000),
+        updatedAt: Date.now(),
+      };
     }
 
     function updateUiState() {
@@ -227,25 +277,23 @@ export function MusicPlayer({
     }
 
     function saveLocalCheckpoint() {
-      const checkpoint: PlaybackCheckpoint = {
-        userId,
-        songId: song.id,
-        positionMs: Math.floor(audioElement.currentTime * 1000),
-        updatedAt: Date.now(),
-      };
+      const checkpoint = createCheckpoint();
 
-      localStorage.setItem(localKey, JSON.stringify(checkpoint));
+      if (!checkpoint) {
+        return;
+      }
+
+      writeLocalCheckpoint(checkpoint);
     }
 
     async function saveRemoteCheckpoint() {
-      const checkpoint: PlaybackCheckpoint = {
-        userId,
-        songId: song.id,
-        positionMs: Math.floor(audioElement.currentTime * 1000),
-        updatedAt: Date.now(),
-      };
+      const checkpoint = createCheckpoint();
 
-      localStorage.setItem(localKey, JSON.stringify(checkpoint));
+      if (!checkpoint) {
+        return;
+      }
+
+      writeLocalCheckpoint(checkpoint);
 
       try {
         await fetch(`${streamBaseUrl}/api/checkpoint`, {
@@ -291,7 +339,7 @@ export function MusicPlayer({
       audioElement.removeEventListener("pause", saveRemoteCheckpoint);
       audioElement.removeEventListener("seeked", saveRemoteCheckpoint);
     };
-  }, [song.id, userId]);
+  }, [applyPendingResume, restoreCheckpoint, song.id, userId]);
 
   useEffect(() => {
     const audio = audioRef.current;
