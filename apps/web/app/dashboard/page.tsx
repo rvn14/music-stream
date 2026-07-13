@@ -1,7 +1,7 @@
 "use client";
 
 import { LogOut, Music2, Play, Search } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { MusicPlayer } from "@/components/music-player";
 import {
   fetchRemoteCheckpoint,
@@ -19,6 +19,14 @@ type User = {
 
 const songAccents = ["#2563eb", "#0891b2", "#7c3aed"];
 
+function formatResumeTime(positionMs: number) {
+  const totalSeconds = Math.max(0, Math.floor(positionMs / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
 export default function DashboardPage() {
   const [user, setUser] = useState<User | null>(null);
   const [songs, setSongs] = useState<DemoSong[]>([]);
@@ -26,6 +34,8 @@ export default function DashboardPage() {
     null,
   );
   const [restoreCheckpoint, setRestoreCheckpoint] =
+    useState<PlaybackCheckpoint | null>(null);
+  const [remoteResume, setRemoteResume] =
     useState<PlaybackCheckpoint | null>(null);
   const [playRequest, setPlayRequest] = useState(0);
 
@@ -84,6 +94,11 @@ export default function DashboardPage() {
         setSongs(data.songs);
         setRestoreCheckpoint(checkpoint);
         setSelectedSong(checkpointSong ?? data.songs[0] ?? null);
+        setRemoteResume(
+          remoteCheckpoint && checkpoint === remoteCheckpoint && checkpointSong
+            ? remoteCheckpoint
+            : null,
+        );
       } catch {
         if (isCancelled) {
           return;
@@ -110,8 +125,55 @@ export default function DashboardPage() {
 
   function selectSong(song: DemoSong) {
     setSelectedSong(song);
+    setRestoreCheckpoint(null);
+    setRemoteResume(null);
     setPlayRequest((currentValue) => currentValue + 1);
   }
+
+  function continueRemotePlayback() {
+    if (!remoteResume) {
+      return;
+    }
+
+    const resumeSong = songs.find((song) => song.id === remoteResume.songId);
+
+    if (!resumeSong) {
+      return;
+    }
+
+    setSelectedSong(resumeSong);
+    setRestoreCheckpoint(remoteResume);
+    setRemoteResume(null);
+    setPlayRequest((currentValue) => currentValue + 1);
+  }
+
+  const selectAdjacentSong = useCallback(
+    (offset: number) => {
+      if (songs.length === 0) {
+        return;
+      }
+
+      const currentIndex = songs.findIndex(
+        (song) => song.id === selectedSong?.id,
+      );
+      const nextIndex =
+        (Math.max(currentIndex, 0) + offset + songs.length) % songs.length;
+
+      setSelectedSong(songs[nextIndex]);
+      setRestoreCheckpoint(null);
+      setPlayRequest((currentValue) => currentValue + 1);
+    },
+    [selectedSong?.id, songs],
+  );
+
+  const playNextSong = useCallback(
+    () => selectAdjacentSong(1),
+    [selectAdjacentSong],
+  );
+  const playPreviousSong = useCallback(
+    () => selectAdjacentSong(-1),
+    [selectAdjacentSong],
+  );
 
   if (!user) {
     return (
@@ -175,6 +237,19 @@ export default function DashboardPage() {
               <p className="mt-2 text-sm leading-6 text-slate-500">
                 Choose one of the three replicated demo streams.
               </p>
+              {remoteResume ? (
+                <button
+                  className="mt-4 w-full rounded-2xl border border-blue-200 bg-blue-50 px-4 py-3 text-left transition hover:bg-blue-100"
+                  onClick={continueRemotePlayback}
+                >
+                  <span className="block text-xs font-semibold uppercase tracking-wider text-blue-600">
+                    Cross-device resume
+                  </span>
+                  <span className="mt-1 block truncate text-sm font-semibold text-slate-900">
+                    Continue {songs.find((song) => song.id === remoteResume.songId)?.title} at {formatResumeTime(remoteResume.positionMs)}
+                  </span>
+                </button>
+              ) : null}
             </div>
 
             <div className="mt-5 min-h-0 space-y-3 overflow-hidden">
@@ -220,6 +295,8 @@ export default function DashboardPage() {
           <section className="min-h-0 overflow-hidden rounded-3xl border border-slate-200 bg-white p-4">
             {selectedSong ? (
               <MusicPlayer
+                onNext={playNextSong}
+                onPrevious={playPreviousSong}
                 playRequest={playRequest}
                 restoreCheckpoint={restoreCheckpoint}
                 song={selectedSong}
