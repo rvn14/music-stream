@@ -34,6 +34,7 @@ services:
       REDIS_A_URL: redis://redis-a:6379
       REDIS_B_URL: redis://redis-b:6379
       ALLOWED_ORIGIN: "*"
+      CHECKPOINT_TTL_SECONDS: "604800"
 
     networks:
       - music-net

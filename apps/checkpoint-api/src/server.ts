@@ -9,6 +9,9 @@ const redisAUrl = process.env.REDIS_A_URL ?? "redis://redis-a:6379";
 const redisBUrl = process.env.REDIS_B_URL ?? "redis://redis-b:6379";
 const allowedOrigin =
   process.env.ALLOWED_ORIGIN ?? "http://localhost:3000";
+const checkpointTtlSeconds = Number(
+  process.env.CHECKPOINT_TTL_SECONDS ?? 60 * 60 * 24 * 7,
+);
 
 app.use(
   cors({
@@ -64,8 +67,8 @@ app.post("/api/checkpoint", async (request, response) => {
   const value = JSON.stringify(checkpoint);
 
   const results = await Promise.allSettled([
-    redisA.set(key, value, { EX: 3600 }),
-    redisB.set(key, value, { EX: 3600 }),
+    redisA.set(key, value, { EX: checkpointTtlSeconds }),
+    redisB.set(key, value, { EX: checkpointTtlSeconds }),
   ]);
 
   const successfulWrites = results.filter(

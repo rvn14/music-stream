@@ -322,13 +322,17 @@ export function MusicPlayer({
       writeLocalCheckpoint(checkpoint);
 
       try {
-        await fetch(`${streamBaseUrl}/api/checkpoint`, {
+        const response = await fetch(`${streamBaseUrl}/api/checkpoint`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
           },
           body: JSON.stringify(checkpoint),
         });
+
+        if (!response.ok) {
+          throw new Error(`Checkpoint save failed with ${response.status}`);
+        }
 
         setLastCheckpoint(new Date().toLocaleTimeString());
       } catch {
