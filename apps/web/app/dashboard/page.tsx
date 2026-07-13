@@ -5,7 +5,6 @@ import { useCallback, useEffect, useState } from "react";
 import { MusicPlayer } from "@/components/music-player";
 import {
   fetchRemoteCheckpoint,
-  getLatestCheckpoint,
   readLocalCheckpoint,
 } from "@/lib/checkpoints";
 import type { PlaybackCheckpoint } from "@/lib/checkpoints";
@@ -79,10 +78,9 @@ export default function DashboardPage() {
         const data = (await songsResponse.json()) as {
           songs: DemoSong[];
         };
-        const checkpoint = getLatestCheckpoint(
-          remoteCheckpoint,
-          localCheckpoint,
-        );
+        // Redis is authoritative for cross-device resume. The device-local
+        // checkpoint is used only when the remote service has no checkpoint.
+        const checkpoint = remoteCheckpoint ?? localCheckpoint;
         const checkpointSong = data.songs.find(
           (song) => song.id === checkpoint?.songId,
         );
@@ -95,7 +93,7 @@ export default function DashboardPage() {
         setRestoreCheckpoint(checkpoint);
         setSelectedSong(checkpointSong ?? data.songs[0] ?? null);
         setRemoteResume(
-          remoteCheckpoint && checkpoint === remoteCheckpoint && checkpointSong
+          remoteCheckpoint && checkpointSong
             ? remoteCheckpoint
             : null,
         );
