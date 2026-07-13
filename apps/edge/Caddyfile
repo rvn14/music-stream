@@ -1,0 +1,5 @@
+18.142.244.153.sslip.io {
+    encode gzip
+
+    reverse_proxy gateway:80
+}
