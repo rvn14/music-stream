@@ -50,6 +50,20 @@ app.get("/health", (_request, response) => {
   });
 });
 
+app.get("/api/media/catalog-health", (_request, response) => {
+  response.json({
+    status: "available",
+    service: "media-node",
+    node: nodeName,
+    songs: [
+      "/media/song-001/index.m3u8",
+      "/media/song-002/index.m3u8",
+      "/media/song-003/index.m3u8",
+    ],
+    time: new Date().toISOString(),
+  });
+});
+
 app.use(
   "/media",
   express.static(mediaDirectory, {

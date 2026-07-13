@@ -3,7 +3,13 @@
 import { LogOut, Music2, Play, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import { MusicPlayer } from "@/components/music-player";
-import { DemoSong } from "@/lib/demo-data";
+import {
+  fetchRemoteCheckpoint,
+  getLatestCheckpoint,
+  readLocalCheckpoint,
+} from "@/lib/checkpoints";
+import type { PlaybackCheckpoint } from "@/lib/checkpoints";
+import type { DemoSong } from "@/lib/demo-data";
 
 type User = {
   id: string;
@@ -19,26 +25,81 @@ export default function DashboardPage() {
   const [selectedSong, setSelectedSong] = useState<DemoSong | null>(
     null,
   );
+  const [restoreCheckpoint, setRestoreCheckpoint] =
+    useState<PlaybackCheckpoint | null>(null);
   const [playRequest, setPlayRequest] = useState(0);
 
   useEffect(() => {
-    const savedUser = localStorage.getItem("music_user");
-    const token = localStorage.getItem("music_token");
+    let isCancelled = false;
 
-    if (!savedUser || !token) {
-      window.location.href = "/";
-      return;
+    async function loadDashboard() {
+      const savedUser = localStorage.getItem("music_user");
+      const token = localStorage.getItem("music_token");
+
+      if (!savedUser || !token) {
+        window.location.href = "/";
+        return;
+      }
+
+      let parsedUser: User;
+
+      try {
+        parsedUser = JSON.parse(savedUser) as User;
+      } catch {
+        window.location.href = "/";
+        return;
+      }
+
+      setUser(parsedUser);
+
+      const localCheckpoint = readLocalCheckpoint(parsedUser.id);
+
+      try {
+        const [songsResponse, remoteCheckpoint] = await Promise.all([
+          fetch("/api/songs", {
+            cache: "no-store",
+          }),
+          fetchRemoteCheckpoint(parsedUser.id).catch(() => null),
+        ]);
+
+        if (!songsResponse.ok) {
+          throw new Error("Failed to load songs");
+        }
+
+        const data = (await songsResponse.json()) as {
+          songs: DemoSong[];
+        };
+        const checkpoint = getLatestCheckpoint(
+          remoteCheckpoint,
+          localCheckpoint,
+        );
+        const checkpointSong = data.songs.find(
+          (song) => song.id === checkpoint?.songId,
+        );
+
+        if (isCancelled) {
+          return;
+        }
+
+        setSongs(data.songs);
+        setRestoreCheckpoint(checkpoint);
+        setSelectedSong(checkpointSong ?? data.songs[0] ?? null);
+      } catch {
+        if (isCancelled) {
+          return;
+        }
+
+        setSongs([]);
+        setRestoreCheckpoint(localCheckpoint);
+        setSelectedSong(null);
+      }
     }
 
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- localStorage is only available after client mount.
-    setUser(JSON.parse(savedUser) as User);
+    void loadDashboard();
 
-    fetch("/api/songs")
-      .then((response) => response.json())
-      .then((data) => {
-        setSongs(data.songs);
-        setSelectedSong(data.songs[0]);
-      });
+    return () => {
+      isCancelled = true;
+    };
   }, []);
 
   function logout() {
@@ -160,6 +221,7 @@ export default function DashboardPage() {
             {selectedSong ? (
               <MusicPlayer
                 playRequest={playRequest}
+                restoreCheckpoint={restoreCheckpoint}
                 song={selectedSong}
                 userId={user.id}
               />
